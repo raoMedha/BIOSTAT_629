@@ -1,0 +1,1193 @@
+
+## Preliminary Project 
+
+# This project aims to identify genetic biomarkers that are associated with overall survivial by various treatment mechanism of action groups amongst colorectal cancer patients. 
+Database used: MSK-CHORD
+
+```{r Load in libraries, message = FALSE, warning = FALSE}
+library(tidyverse) # data handling, plots 
+library(gt) # "good table" to make pretty tables
+library(survival) # survivial analysis 
+library(boot) # boostrapping analyses
+library(survminer) # Kaplan-Meier plots 
+library(reshape2) # correlation heat map creation helper
+
+```
+
+
+```{r Read in all Data Files from folder, echo = FALSE}
+data_timeline_mmr <- read.delim(file = "msk_chord_2024/data_timeline_mmr.txt", header = TRUE)
+
+data_timeline_pdl1<- read.delim(file = "msk_chord_2024/data_timeline_pdl1.txt", header = TRUE)
+
+data_timeline_prior_meds <- read.delim(file = "msk_chord_2024/data_timeline_prior_meds.txt", header = TRUE)
+
+data_timeline_radiation <- read.delim(file = "msk_chord_2024/data_timeline_radiation.txt", header = TRUE)
+
+data_timeline_surgery <- read.delim(file = "msk_chord_2024/data_timeline_surgery.txt", header = TRUE)
+
+data_clinical_patient <- read.delim(file = "msk_chord_2024/data_clinical_patient.txt", header = TRUE, skip = 4)
+
+data_clinical_sample <- read.delim(file = "msk_chord_2024/data_clinical_sample.txt", header = TRUE, skip = 4)
+
+data_timeline_diagnosis <- read.delim(file = "msk_chord_2024/data_timeline_diagnosis.txt", header = TRUE)
+
+data_timeline_treatment <- read.delim(file = "msk_chord_2024/data_timeline_treatment.txt", header = TRUE)
+
+data_mutations <- read.delim(file = "msk_chord_2024/data_mutations.txt", header = TRUE)
+```
+
+
+```{r CRC Only Data Sets}
+# Identifying only CRC patients
+CRC_patients <- data_clinical_sample |> filter(CANCER_TYPE == "Colorectal Cancer") |>
+  pull(PATIENT_ID) # CLINICAL SAMPLE has MSI flags
+  # 5543 CRC patients
+
+# Consolidation of clinical data sets (demographic info, cancer info, MSI info, etc.)
+CRC_clinical_pt <- data_clinical_patient |> filter(PATIENT_ID %in% CRC_patients) 
+CRC_clinical_samp<- data_clinical_sample |> filter(PATIENT_ID %in% CRC_patients)
+
+CRC_clinical <- full_join(CRC_clinical_pt, CRC_clinical_samp)
+
+# timeline data --> only selecting CRC patients
+CRC_diagnosis <- data_timeline_diagnosis |> filter(PATIENT_ID %in% CRC_patients)
+
+CRC_mmr <- data_timeline_mmr |> filter(PATIENT_ID %in% CRC_patients)
+
+CRC_pdl1 <- data_timeline_pdl1 |> filter(PATIENT_ID %in% CRC_patients)
+
+CRC_priorMeds <- data_timeline_prior_meds |> filter(PATIENT_ID %in% CRC_patients)
+
+CRC_radiation <- data_timeline_radiation |> filter(PATIENT_ID %in% CRC_patients)
+
+CRC_surgery <- data_timeline_surgery |> filter(PATIENT_ID %in% CRC_patients)
+
+CRC_tx <- data_timeline_treatment |> filter(PATIENT_ID %in% CRC_patients)
+
+CRC_muts <- data_mutations |> 
+  mutate(PATIENT_ID = str_extract(Tumor_Sample_Barcode, "P-\\d{7}")) |>
+  filter(PATIENT_ID %in% CRC_patients)
+
+# cleaning up environment :) 
+rm(data_clinical_patient, data_clinical_sample, data_mutations, data_timeline_diagnosis, data_timeline_mmr, data_timeline_pdl1, data_timeline_prior_meds, data_timeline_radiation, data_timeline_surgery, data_timeline_treatment, CRC_clinical_pt, CRC_clinical_samp)
+
+```
+
+```{r CRC MoA Drug Names}
+
+# create a mapping from each possible ( from Feb 2026 available info) CRC drug name to a drug treatment MoA category
+drug_moa <- tibble::tribble(
+  ~drug, ~moa,
+  "VINCRISTINE", "CHEMO_CYTOTOXIC",
+  "FLUDARABINE", "CHEMO_CYTOTOXIC",
+  "CYCLOPHOSPHAMIDE", "CHEMO_CYTOTOXIC",
+  "CISPLATIN", "CHEMO_CYTOTOXIC",
+  "GEMCITABINE", "CHEMO_CYTOTOXIC",
+  "CAPECITABINE", "CHEMO_CYTOTOXIC",
+  "FLUOROURACIL", "CHEMO_CYTOTOXIC",
+  "LEUCOVORIN", "CHEMO_CYTOTOXIC",
+  "OXALIPLATIN", "CHEMO_CYTOTOXIC",
+  "IRINOTECAN", "CHEMO_CYTOTOXIC",
+  "BEVACIZUMAB", "ANTI_VEGF_ANGIO",
+  "PANITUMUMAB", "ANTI_EGFR",
+  "INVESTIGATIONAL", "UNKNOWN_INVESTIGATIONAL",
+  "ZOLEDRONIC ACID", "HORMONAL_SUPPORTIVE_OTHER",
+  "FLOXURIDINE", "CHEMO_CYTOTOXIC",
+  "VEMURAFENIB", "TARGETED_OTHER",
+  "CETUXIMAB", "ANTI_EGFR",
+  "MEGESTROL", "HORMONAL_SUPPORTIVE_OTHER",
+  "TIPIRACIL-TRIFLURIDINE", "CHEMO_CYTOTOXIC",
+  "REGORAFENIB", "ANTI_VEGF_ANGIO",
+  "TRASTUZUMAB", "TARGETED_OTHER",
+  "YTTRIUM Y-90 THERASPHERES", "RADIOPHARM",
+  "MITOMYCIN", "CHEMO_CYTOTOXIC",
+  "PAMIDRONATE", "HORMONAL_SUPPORTIVE_OTHER",
+  "DABRAFENIB", "TARGETED_OTHER",
+  "TRAMETINIB", "TARGETED_OTHER",
+  "CARBOPLATIN", "CHEMO_CYTOTOXIC",
+  "ETOPOSIDE", "CHEMO_CYTOTOXIC",
+  "COBIMETINIB", "TARGETED_OTHER",
+  "ISOTRETINOIN", "HORMONAL_SUPPORTIVE_OTHER",
+  "RITUXIMAB", "IMMUNOTHERAPY",
+  "SODIUM IODIDE I-131", "RADIOPHARM",
+  "PEMBROLIZUMAB", "IMMUNOTHERAPY",
+  "YTTRIUM Y-90 MICROSPHERES", "RADIOPHARM",
+  "IPILIMUMAB", "IMMUNOTHERAPY",
+  "NIVOLUMAB", "IMMUNOTHERAPY",
+  "METHOTREXATE", "CHEMO_CYTOTOXIC",
+  "EVEROLIMUS", "TARGETED_OTHER",
+  "FLUOROURACIL TOPICAL", "CHEMO_CYTOTOXIC",
+  "ANASTROZOLE", "HORMONAL_SUPPORTIVE_OTHER",
+  "CLADRIBINE", "CHEMO_CYTOTOXIC",
+  "LETROZOLE", "HORMONAL_SUPPORTIVE_OTHER",
+  "BICALUTAMIDE", "HORMONAL_SUPPORTIVE_OTHER",
+  "DEGARELIX", "HORMONAL_SUPPORTIVE_OTHER",
+  "RALOXIFENE", "HORMONAL_SUPPORTIVE_OTHER",
+  "IMATINIB", "TARGETED_OTHER",
+  "SUNITINIB", "ANTI_VEGF_ANGIO",
+  "SODIUM IODIDE I-131 MIBG", "RADIOPHARM",
+  "LUTETIUM LU-177 DOTATATE", "RADIOPHARM",
+  "DOXORUBICIN", "CHEMO_CYTOTOXIC",
+  "PACLITAXEL", "CHEMO_CYTOTOXIC",
+  "CYTARABINE", "CHEMO_CYTOTOXIC",
+  "CARMUSTINE", "CHEMO_CYTOTOXIC",
+  "MELPHALAN", "CHEMO_CYTOTOXIC",
+  "EXEMESTANE", "HORMONAL_SUPPORTIVE_OTHER",
+  "ATEZOLIZUMAB", "IMMUNOTHERAPY",
+  "HYDROXYUREA", "CHEMO_CYTOTOXIC",
+  "AZACITIDINE", "CHEMO_CYTOTOXIC",
+  "LEUPROLIDE", "HORMONAL_SUPPORTIVE_OTHER",
+  "ENCORAFENIB", "TARGETED_OTHER",
+  "BLEOMYCIN", "CHEMO_CYTOTOXIC",
+  "DACTINOMYCIN", "CHEMO_CYTOTOXIC",
+  "IFOSFAMIDE", "CHEMO_CYTOTOXIC",
+  "TEMOZOLOMIDE", "CHEMO_CYTOTOXIC",
+  "FULVESTRANT", "HORMONAL_SUPPORTIVE_OTHER",
+  "PALBOCICLIB", "TARGETED_OTHER",
+  "TAMOXIFEN", "HORMONAL_SUPPORTIVE_OTHER",
+  "PAZOPANIB", "ANTI_VEGF_ANGIO",
+  "PACLITAXEL PROTEIN-BOUND", "CHEMO_CYTOTOXIC",
+  "RAMUCIRUMAB", "ANTI_VEGF_ANGIO",
+  "MERCAPTOPURINE", "CHEMO_CYTOTOXIC",
+  "RUXOLITINIB", "TARGETED_OTHER",
+  "PACRITINIB", "TARGETED_OTHER",
+  "GOSERELIN", "HORMONAL_SUPPORTIVE_OTHER",
+  "PROCARBAZINE", "CHEMO_CYTOTOXIC",
+  "LENALIDOMIDE", "TARGETED_OTHER",
+  "DOCETAXEL", "CHEMO_CYTOTOXIC",
+  "ABIRATERONE", "HORMONAL_SUPPORTIVE_OTHER",
+  "APALUTAMIDE", "HORMONAL_SUPPORTIVE_OTHER",
+  "CABAZITAXEL", "CHEMO_CYTOTOXIC",
+  "OLAPARIB", "TARGETED_OTHER",
+  "TUCATINIB", "TARGETED_OTHER",
+  "ASPARAGINASE ESCHERICHIA COLI", "CHEMO_CYTOTOXIC",
+  "PEGASPARGASE", "CHEMO_CYTOTOXIC",
+  "ALEMTUZUMAB", "IMMUNOTHERAPY",
+  "PEMETREXED", "CHEMO_CYTOTOXIC",
+  "ADO-TRASTUZUMAB EMTANSINE", "TARGETED_OTHER",
+  "PERTUZUMAB", "TARGETED_OTHER",
+  "BRENTUXIMAB VEDOTIN", "IMMUNOTHERAPY",
+  "MITOXANTRONE", "CHEMO_CYTOTOXIC",
+  "OBINUTUZUMAB", "IMMUNOTHERAPY",
+  "ENZALUTAMIDE", "HORMONAL_SUPPORTIVE_OTHER",
+  "TALAZOPARIB", "TARGETED_OTHER",
+  "ERLOTINIB", "TARGETED_OTHER",
+  "IBRUTINIB", "TARGETED_OTHER",
+  "DAROLUTAMIDE", "HORMONAL_SUPPORTIVE_OTHER",
+  "LAPATINIB", "TARGETED_OTHER",
+  "BCG", "HORMONAL_SUPPORTIVE_OTHER",
+  "LENVATINIB", "ANTI_VEGF_ANGIO",
+  "BINIMETINIB", "TARGETED_OTHER",
+  "FAM-TRASTUZUMAB DERUXTECAN", "TARGETED_OTHER",
+  "DOXORUBICIN LIPOSOMAL", "CHEMO_CYTOTOXIC",
+  "VINORELBINE", "CHEMO_CYTOTOXIC",
+  "RADIUM RA-223 DICHLORIDE", "RADIOPHARM",
+  "TRETINOIN", "HORMONAL_SUPPORTIVE_OTHER",
+  "NIRAPARIB", "TARGETED_OTHER",
+  "CARFILZOMIB", "TARGETED_OTHER",
+  "CABOZANTINIB", "ANTI_VEGF_ANGIO",
+  "SOTORASIB", "TARGETED_OTHER",
+  "CERITINIB", "TARGETED_OTHER",
+  "RIBOCICLIB", "TARGETED_OTHER",
+  "ACALABRUTINIB", "TARGETED_OTHER",
+  "THIOTEPA", "CHEMO_CYTOTOXIC",
+  "BENDAMUSTINE", "CHEMO_CYTOTOXIC",
+  "CRIZOTINIB", "TARGETED_OTHER",
+  "VISMODEGIB", "TARGETED_OTHER",
+  "AFLIBERCEPT OPHTHALMIC", "ANTI_VEGF_ANGIO",
+  "SELPERCATINIB", "TARGETED_OTHER",
+  "NERATINIB", "TARGETED_OTHER",
+  "VENETOCLAX", "TARGETED_OTHER",
+  "DARATUMUMAB", "IMMUNOTHERAPY",
+  "POMALIDOMIDE", "TARGETED_OTHER",
+  "IRINOTECAN LIPOSOMAL", "CHEMO_CYTOTOXIC",
+  "DASATINIB", "TARGETED_OTHER",
+  "PONATINIB", "TARGETED_OTHER",
+  "BLINATUMOMAB", "IMMUNOTHERAPY",
+  "LAROTRECTINIB", "TARGETED_OTHER",
+  "DURVALUMAB", "IMMUNOTHERAPY",
+  "NILOTINIB", "TARGETED_OTHER",
+  "AVELUMAB", "IMMUNOTHERAPY",
+  "ENFORTUMAB VEDOTIN", "IMMUNOTHERAPY",
+  "RUCAPARIB", "TARGETED_OTHER",
+  "DAUNORUBICIN", "CHEMO_CYTOTOXIC",
+  "GEMTUZUMAB OZOGAMICIN", "IMMUNOTHERAPY",
+  "BUSULFAN", "CHEMO_CYTOTOXIC",
+  "CLOFARABINE", "CHEMO_CYTOTOXIC",
+  "THIOGUANINE", "CHEMO_CYTOTOXIC",
+  "IVOSIDENIB", "TARGETED_OTHER",
+  "PENTOSTATIN", "CHEMO_CYTOTOXIC",
+  "SORAFENIB", "ANTI_VEGF_ANGIO",
+  "BORTEZOMIB", "TARGETED_OTHER",
+  "DARATUMUMAB-HYALURONIDASE", "IMMUNOTHERAPY",
+  "HYALURONIDASE-RITUXIMAB", "IMMUNOTHERAPY",
+  "BRIGATINIB", "TARGETED_OTHER",
+  "IXAZOMIB", "TARGETED_OTHER",
+  "EPIRUBICIN", "CHEMO_CYTOTOXIC",
+  "ROMIDEPSIN", "CHEMO_CYTOTOXIC",
+  "TOPOTECAN", "CHEMO_CYTOTOXIC",
+  "VINBLASTINE", "CHEMO_CYTOTOXIC",
+  "OFATUMUMAB", "IMMUNOTHERAPY",
+  "ENTRECTINIB", "TARGETED_OTHER",
+  "POLATUZUMAB VEDOTIN", "IMMUNOTHERAPY",
+  "EPCORITAMAB", "IMMUNOTHERAPY"
+)
+
+# join the treatments to the initial drug mapping
+CRC_tx <- CRC_tx |> 
+  left_join(drug_moa, by = c("AGENT" = "drug"))
+
+# table(CRC_tx$moa)
+#                 ANTI_EGFR           ANTI_VEGF_ANGIO           CHEMO_CYTOTOXIC 
+#                      1049                      2286                     24286 
+# HORMONAL_SUPPORTIVE_OTHER             IMMUNOTHERAPY                RADIOPHARM 
+#                       888                       379                       193 
+#            TARGETED_OTHER   UNKNOWN_INVESTIGATIONAL 
+#                       353                       815
+
+# further on, we will consolidate these groups into three main groups, as there is not enough patients in each group and enough deaths in each group to run a powerful survival analysis
+
+```
+
+
+```{r Creating Survival Events}
+
+# only doing metastatic CRC, makes it easier to control for differential treatment assignments 
+
+metaCRC_patients <- CRC_clinical |> 
+  filter(METASTATIC_SITE != "Not Applicable") |> 
+  dplyr::select(PATIENT_ID) |> 
+  dplyr::pull()
+
+Survival_patients <- CRC_tx |> 
+  filter(PATIENT_ID %in% metaCRC_patients) |> 
+  dplyr::select(PATIENT_ID) |> 
+  dplyr::pull()
+
+CRC_tx <- CRC_tx |> 
+  filter(PATIENT_ID %in% metaCRC_patients)
+
+CRC_diagnosis <- CRC_diagnosis |> 
+  filter(PATIENT_ID %in% Survival_patients)
+
+# find duplicated rows, some have same CRC diagnosis split into different parts of intestine, some also have lung cancer in this data set, need to take the lung cancer diagnoses out since that date is not important
+
+dupe_rows <- CRC_diagnosis |>
+  group_by(PATIENT_ID) |>
+  filter(n() > 1) |>
+  ungroup() |> 
+  dplyr::select(PATIENT_ID, START_DATE, DX_DESCRIPTION) |>
+  mutate(CRC_yes = case_when(str_detect(DX_DESCRIPTION, "COLON|RECTUM|RECTOSIGMOID") ~ 1,
+                             TRUE ~ 0)) |> 
+  filter(CRC_yes == 1) |> 
+  group_by(PATIENT_ID) |>
+  mutate(keepThis = case_when(
+    n() == 1 ~ TRUE,
+    n() > 1 & min(START_DATE) == max(START_DATE) & row_number() == 1 ~ TRUE,
+    n() > 1 & min(START_DATE) != max(START_DATE) ~ TRUE, 
+    TRUE ~ FALSE
+  )) |> 
+  ungroup() |> dplyr::select(-CRC_yes)
+
+# final CRC diagnosis set, now only has relevant CRC diagnosis (metastatic)
+CRC_diagnosis <- CRC_diagnosis |> 
+  left_join(dupe_rows, by = c("PATIENT_ID", "START_DATE", "DX_DESCRIPTION")) |> 
+  filter(keepThis == TRUE | is.na(keepThis)) |> dplyr::select(-keepThis)
+
+# now need to identify the unique start dates of the patient diagnosis (same diagnosis of multiple areas on the same day count as one diagnosis of CRC on that day)
+dx_all_days_per_patient <- CRC_diagnosis |>
+  group_by(PATIENT_ID) |>
+  summarise(
+    dx_days_from_seq = list(sort(unique(START_DATE))),
+    n_dx = n_distinct(START_DATE),
+    .groups = "drop"
+  )
+
+# using the diagnosis and start dates of diagnosis and joining into the treatment data set 
+try_tx_filtering <- left_join(CRC_tx, dx_all_days_per_patient, by = "PATIENT_ID")
+
+
+# patients have many treatments at different time intervals, this chooses the proper diagnosis date that corresponds with the proper firstline treatment. For example, they could have been treated for lung cancer two years ago, but that counts as the first line unless it is filtered out 
+dx_chosen <- try_tx_filtering |>
+  distinct(PATIENT_ID, dx_days_from_seq, START_DATE) |>
+  group_by(PATIENT_ID) |>
+  summarise(
+    first_tx_day = suppressWarnings(min(as.numeric(START_DATE), na.rm = TRUE)),
+    dx_list = list(
+      as.numeric(str_trim(str_extract_all(dx_days_from_seq, "-?\\d+")[[1]]))
+    ),
+    dx_day = {
+      d <- dx_list[[1]]
+      d_ok <- d[!is.na(d) & d <= first_tx_day]
+      if (length(d_ok) == 0) NA_real_ else max(d_ok)
+    },
+    .groups = "drop"
+  )
+
+# choose the firstline treatment as the earliest treatment ON or AFTER the diagnosis date  
+firstline_tx <- try_tx_filtering |>
+  left_join(dx_chosen |> dplyr::select(PATIENT_ID, dx_day), by = "PATIENT_ID") |>
+  mutate(START_DATE = as.numeric(START_DATE)) |>
+  filter(!is.na(dx_day)) |>
+  group_by(PATIENT_ID) |>
+  filter(START_DATE >= dx_day) |>
+  mutate(first1l_day = min(START_DATE, na.rm = TRUE)) |>
+  filter(START_DATE == first1l_day) |>
+  ungroup()
+
+# summary of the regimen started on firstline treatment (i.e. started chemo and a targeted agent in tandem)
+firstline_regimen <- firstline_tx |>
+  group_by(PATIENT_ID) |>
+  summarise(
+    dx_day = first(dx_day),
+    first1l_day = first(first1l_day),
+    agents = paste(sort(unique(AGENT)), collapse = " + "),
+    moas   = paste(sort(unique(moa)), collapse = " + "),
+    .groups = "drop"
+  )
+
+# joining clinical and firstline regimen data 
+CRC_clinical <- left_join(firstline_regimen, CRC_clinical, by = "PATIENT_ID")
+
+# final making sure that it is the metastatic patients and only CRC-related rows 
+CRC_clinical <- CRC_clinical |> filter(CANCER_TYPE == "Colorectal Cancer") |> filter (PATIENT_ID %in% metaCRC_patients)
+
+# Create moa_grp from moas combinations
+CRC_clinical <- CRC_clinical |>
+  mutate(moa_grp = case_when(
+    moas == "CHEMO_CYTOTOXIC" ~ "CHEMO",
+    moas == "ANTI_VEGF_ANGIO + CHEMO_CYTOTOXIC" ~ "CHEMO+VEGF",
+    moas == "ANTI_EGFR + CHEMO_CYTOTOXIC" ~ "CHEMO+EGFR",
+    moas %in% c("IMMUNOTHERAPY") ~ "IO",
+    TRUE ~ "OTHER"
+  ))
+
+
+CRC_clinical <- CRC_clinical |>
+  mutate(moa_consolidated = case_when(
+    moa_grp == "CHEMO" ~ "Chemo",
+    moa_grp %in% c("CHEMO+VEGF", "CHEMO+EGFR") ~ "Chemo+Targeted",
+    moa_grp %in% c("IO", "OTHER") ~ "Other/IO",
+    TRUE ~ NA_character_
+  ))
+
+table(CRC_clinical$moa_consolidated)
+
+# table for deaths and patients in each MoA group
+# CRC_clinical |> 
+#   group_by(moa_consolidated) |> 
+#   summarise(
+#     n_patients = n(),
+#     n_deaths = sum(OS_STATUS == "1:DECEASED"),
+#     death_rate = mean(OS_STATUS == "1:DECEASED"),
+#     .groups = "drop"
+#   )
+
+
+```
+
+
+```{r Select Top Freq Genes and Binarize Mutations}
+
+#####################################
+# 0.0 TOP FREQUENCY GENES 
+#####################################
+
+# Get mutation frequency for all genes
+ mutationFreq <- CRC_muts |>
+     group_by(Hugo_Symbol) |>
+     summarise(nPats = n_distinct(PATIENT_ID), .groups = "drop") |>
+     arrange(desc(nPats))
+
+# top 15 genes by frequency of mutation in CRC patients 
+# check if CRC_muts is only metastatic CRC patients ~!!!!!!!!
+head(mutationFreq, 15)
+
+
+# Choose top 10 genes (chose 10 arbitrarily, can choose a different number too)
+topGenes <- mutationFreq |>
+     head(10) |>
+     pull(Hugo_Symbol)
+
+print(topGenes)
+
+mutationGenes <- topGenes
+
+##########################################################################
+# 0.1 BINARIZSE MUTATIONS in genes of interest (yes/no mutation in gene)
+##########################################################################
+
+# matrix of mutations by patient
+mutMat <- CRC_muts |>
+  distinct(PATIENT_ID, Hugo_Symbol) |>
+  pivot_wider(
+    names_from = Hugo_Symbol,
+    values_from = Hugo_Symbol,
+    values_fill = NA
+  ) |>
+  # Convert to binary (1 = mutant, 0 = wildtype)
+  mutate(across(all_of(mutationGenes),
+                ~ifelse(!is.na(.), 1, 0), 
+                .names = "{.col}_mut"))
+
+# Join mutations to clinical data
+survDF<- CRC_clinical |>
+  left_join(mutMat |> dplyr::select(PATIENT_ID, ends_with("_mut")), 
+            by = "PATIENT_ID") |>
+  # Set NA mutations to 0 (wildtype)
+  mutate(across(ends_with("_mut"), 
+                ~replace_na(., 0))) |>
+  # Create survival event indicator
+  mutate(
+    OS_event = as.numeric(OS_STATUS == "1:DECEASED"),
+    OS_time = OS_MONTHS
+  ) |>
+  # Remove rows with missing time or event data
+  filter(!is.na(OS_time) & !is.na(OS_event) & OS_time > 0)
+
+# check for mutation prevalence in cohort
+survDF |>
+  summarise(across(ends_with("_mut"), 
+                   list(n = ~sum(., na.rm = TRUE),
+                        pct = ~mean(., na.rm = TRUE) * 100),
+                   .names = "{.col}_{.fn}")) |>
+  t() |>
+  print()
+
+# AFTER LINEARITY ASSUMPTION CHECK: adding transformed vars to df and updating below models with the transformed vars 
+
+survDF <- survDF |> 
+  mutate(ageSquared = CURRENT_AGE_DEID^2, 
+                           logMSI = log(MSI_SCORE + 1), 
+                           logTMB = log(TMB_NONSYNONYMOUS + 1), 
+                           logMSISquared = logMSI^2, 
+                           logTMBSquared = logTMB^2) |> 
+  filter(!is.na(MSI_SCORE)) |>
+  filter(MSI_SCORE != -1)
+```
+
+
+```{r Univariate Cox Models by each top gene (Effect Modification)}
+##########################################################################
+# 1.1 UNIVAR COX MODELS (build cox model by each top 10 gene)
+##########################################################################
+
+# create a list of results for the univar models I am running
+uniRes <- list()
+
+# for loop to build a model for each gene in top N gene list (choosing top 10 for now)
+for (gene in mutationGenes) {
+  geneVar <- paste0(gene, "_mut")
+   
+  modelFormula <- as.formula(paste(
+    "Surv(OS_time, OS_event) ~", geneVar, 
+    "+ moa_consolidated +", geneVar, ":moa_consolidated",
+    "+ CURRENT_AGE_DEID + ageSquared + GENDER + RACE + STAGE_HIGHEST_RECORDED"
+  ))   
+  
+  cox <- coxph(modelFormula, data = survDF)
+  
+  uniRes[[gene]] <- list(
+    model = cox,
+    summary = summary(cox)
+  )
+  
+  # uncomment to see each individual cox model summary... 
+  # cat("Gene:", gene, "\n")
+  # print(summary(cox))
+  # cat("\n")
+}
+
+```
+
+
+```{r Improved univariate analysis with more predictors (Effect Modification)}
+
+##########################################################################
+# 1.2 IMPROVED UNIVAR COX MODELS (with MSI + TMB biomarkers)
+##########################################################################
+
+# improved (hopefully) univar res list with MSI and TMB 
+uniRes_improved <- list()
+
+for (gene in mutationGenes) {
+  geneVar <- paste0(gene, "_mut")
+  
+  modelFormula <- as.formula(paste(
+    "Surv(OS_time, OS_event) ~", geneVar, 
+    "+ moa_consolidated +", geneVar, ":moa_consolidated",
+    "+ CURRENT_AGE_DEID + ageSquared + GENDER + RACE + STAGE_HIGHEST_RECORDED",
+    " + logMSI + logTMB + logMSISquared + logTMBSquared" 
+  ))
+  
+  cox <- coxph(modelFormula, data = survDF)
+  
+  uniRes_improved[[gene]] <- list(
+    model = cox,
+    summary = summary(cox)
+  )
+}
+```
+
+
+```{r Stratified analysis by MoA Group (Effect Size)}
+
+#####################################
+# 1.3 STRATIFIED ANALYSIS by MoA group
+#####################################
+
+# create groups array and results list
+moa_groups <- unique(survDF$moa_consolidated)
+stratRes <- list()
+
+# for loop creating each model by moa group
+for (moa in moa_groups) {
+  # cat("MOA GROUP:", moa, "\n")
+  survDF_subset <- survDF |> filter(moa_consolidated == moa)
+  
+  # cat("N =", nrow(survDF_subset), "| Deaths =", sum(survDF_subset$OS_event), "\n\n")
+  
+  stratGeneRes <- list()
+  
+  for (gene in mutationGenes) {
+    geneVar <- paste0(gene, "_mut")
+    
+    # Model: gene + age + sex + stage + MSI + TMB
+    modelForm <- as.formula(paste(
+      "Surv(OS_time, OS_event) ~", geneVar,
+      "+ CURRENT_AGE_DEID + ageSquared + GENDER + RACE + STAGE_HIGHEST_RECORDED  + logMSI + logTMB + logMSISquared + logTMBSquared"
+    ))
+    
+    cox <- coxph(modelForm, data = survDF_subset)
+    
+    stratGeneRes[[gene]] <- summary(cox)
+    
+    # get HR for each moa by mutation
+    cat("Gene:", gene, "| HR:", 
+        round(summary(cox)$conf.int[1, 1], 3), 
+        "| p-value:", 
+        round(summary(cox)$coefficients[1, 5], 4), "\n")
+  }
+  
+  stratRes[[moa]] <- stratGeneRes
+}
+
+```
+
+
+```{r Summarizing Interaction Term Results (Improved Univar Models)}
+
+#####################################
+# 2.1 FOCUS ON INTERACTION TERMS 
+#####################################
+
+ixRes <- tibble()
+
+for (gene in mutationGenes) {
+  coxSumm <- uniRes_improved[[gene]]$summary
+  
+  # get covar results
+  coef_df <- as.data.frame(coxSumm$coefficients) |>
+    rownames_to_column("Variable") |>
+    as_tibble() |>
+    mutate(Gene = gene) |>
+    # only choose the interaction terms
+    filter(str_detect(Variable, ":moa_consolidated"))
+  
+  ixRes <- bind_rows(ixRes, coef_df)
+}
+
+
+# create ix table
+ixTab <- ixRes |>
+  dplyr::select(Gene, Variable, coef, `exp(coef)`, `se(coef)`, `z`, `Pr(>|z|)`) |>
+  rename(
+    HR = `exp(coef)`,
+    SE = `se(coef)`,
+    Z_stat = `z`,
+    P_value = `Pr(>|z|)`,
+    Interaction_Term = Variable
+  ) |>
+  mutate(
+    CI_lower = exp(coef - 1.645 * SE),
+    CI_upper = exp(coef + 1.645 * SE),
+    Significant = ifelse(P_value < 0.1, "YES", "NO"),
+    # added interpretaton for ix term
+    Interpretation = case_when(
+      P_value < 0.1 & HR > 1 ~ "Mutation effect AMPLIFIED in this treatment",
+      P_value < 0.1 & HR < 1 ~ "Mutation effect ATTENUATED in this treatment",
+      P_value >= 0.1 ~ "No significant interaction"
+    )
+  ) |>
+  dplyr::select(Gene, Interaction_Term, HR, CI_lower, CI_upper, P_value, Significant, Interpretation) |>
+  arrange(P_value)
+
+
+# ADD THIS RIGHT AFTER YOU CREATE ixTab (in section 2.1)
+# Insert between the ixTab creation and the print statement
+
+# ============================================================================
+# MULTIPLE TESTING CORRECTION
+# ============================================================================
+
+# You're testing 20 interaction terms (10 genes × 2 MoA comparisons)
+# Apply both Bonferroni and FDR corrections
+
+ixTab <- ixTab |>
+  mutate(
+    # Bonferroni correction (most conservative)
+    P_value_bonferroni = p.adjust(P_value, method = "bonferroni"),
+    
+    # FDR correction (Benjamini-Hochberg, less conservative)
+    P_value_fdr = p.adjust(P_value, method = "BH"),
+    
+    # Flag significance at different thresholds
+    Sig_Uncorrected = ifelse(P_value < 0.1, "YES", "NO"),
+    Sig_FDR = ifelse(P_value_fdr < 0.1, "YES", "NO"),
+    Sig_Bonferroni = ifelse(P_value_bonferroni < 0.1, "YES", "NO")
+  ) |>
+  dplyr::select(
+    Gene, Interaction_Term, HR, CI_lower, CI_upper,
+    P_value, P_value_fdr, P_value_bonferroni,
+    Sig_Uncorrected, Sig_FDR, Sig_Bonferroni,
+    Interpretation
+  ) |>
+  arrange(P_value)
+
+print(ixTab)
+
+# ============================================================================
+# SUMMARY: How many pass each threshold?
+# ============================================================================
+
+cat("\n=== MULTIPLE TESTING CORRECTION SUMMARY ===\n\n")
+cat("Total tests:", nrow(ixTab), "\n")
+cat("Significant at uncorrected p < 0.05:", sum(ixTab$Sig_Uncorrected == "YES"), "\n")
+cat("Significant at FDR p < 0.05:", sum(ixTab$Sig_FDR == "YES"), "\n")
+cat("Significant at Bonferroni p < 0.05:", sum(ixTab$Sig_Bonferroni == "YES"), "\n\n")
+
+# Show which remain robust after correction
+robust_findings <- ixTab |>
+  filter(Sig_FDR == "YES") |>
+  dplyr::select(Gene, Interaction_Term, HR, P_value, P_value_fdr)
+
+if (nrow(robust_findings) > 0) {
+  cat("ROBUST FINDINGS (significant after FDR correction):\n\n")
+  print(robust_findings)
+} else {
+  cat("No findings remain significant after FDR correction.\n")
+  cat("However, FDR < 0.10 results may still be biologically meaningful:\n\n")
+  borderline <- ixTab |>
+    filter(P_value_fdr < 0.10) |>
+    dplyr::select(Gene, Interaction_Term, HR, P_value, P_value_fdr)
+  print(borderline)
+}
+
+cat("\n")
+
+print(ixTab)
+
+#####################################
+# 2.2 SIGNIFICANT IX p < 0.05
+#####################################
+# UNCORRECTED significant (for reference)
+sigIX_uncorrected <- ixTab |>
+  filter(Sig_Uncorrected == "YES") |>
+  arrange(P_value)
+
+# FDR-corrected significant (preferred)
+sigIX_fdr <- ixTab |>
+  filter(Sig_FDR == "YES") |>
+  arrange(P_value_fdr)
+
+if (nrow(sigIX_fdr) > 0) {
+  cat("SIGNIFICANT AFTER FDR CORRECTION:\n")
+  print(sigIX_fdr)
+} else {
+  cat("No interactions survive FDR correction.\n")
+  cat("Uncorrected findings for reference:\n")
+  print(sigIX_uncorrected)
+}
+
+``` 
+
+
+```{r Summarizing HR Results (Stratified Models, effect SIZE quantification)}
+#####################################
+# 2.4 MOA MUTATION EFFECT (Strat HR) 
+# HR of each mut WITHIN MoA Group
+#####################################
+stratHR <- tibble()
+
+# for loop to go through each gene and get the HRs and p-vals 
+for (treatment in names(stratRes)) {
+  for (gene in names(stratRes[[treatment]])) {
+    
+    summary_obj <- stratRes[[treatment]][[gene]]
+    
+    # Extract HR and p-value
+    hr <- summary_obj$conf.int[1, 1]
+    hr_lower <- summary_obj$conf.int[1, 3]
+    hr_upper <- summary_obj$conf.int[1, 4]
+    p_val <- summary_obj$coefficients[1, 5]
+    
+    stratHR <- bind_rows(
+      stratHR,
+      tibble(
+        Gene = gene,
+        Treatment = treatment,
+        HR = hr,
+        CI_lower = hr_lower,
+        CI_upper = hr_upper,
+        P_value = p_val
+      )
+    )
+  }
+}
+
+# pivot wider, treatments now next to each other 
+stratified_wide <- stratHR |>
+  pivot_wider(
+    names_from = Treatment,
+    values_from = c(HR, CI_lower, CI_upper, P_value),
+    names_glue = "{Treatment}_{.value}"
+  ) |>
+  dplyr::select(Gene, starts_with("Chemo_"), starts_with("Chemo+"), starts_with("Other"))
+
+print(stratified_wide)
+
+################################################### 
+# 2.5 genes with largest HR diff by moa group
+###################################################
+
+# pivot HR 
+hr_comparison <- stratHR |>
+  dplyr::select(Gene, Treatment, HR) |>
+  pivot_wider(
+    names_from = Treatment,
+    values_from = HR
+  ) |>
+  mutate(
+    Chemo_vs_ChemoTargeted = ifelse(!is.na(Chemo) & !is.na(`Chemo+Targeted`),
+                                     abs(log(Chemo) - log(`Chemo+Targeted`)), 
+                                     NA),
+    Chemo_vs_OtherIO = ifelse(!is.na(Chemo) & !is.na(`Other/IO`),
+                              abs(log(Chemo) - log(`Other/IO`)), 
+                              NA),
+    ChemoTargeted_vs_OtherIO = ifelse(!is.na(`Chemo+Targeted`) & !is.na(`Other/IO`),
+                                      abs(log(`Chemo+Targeted`) - log(`Other/IO`)), 
+                                      NA)
+  ) |>
+  arrange(desc(Chemo_vs_ChemoTargeted), desc(Chemo_vs_OtherIO))
+
+print(hr_comparison)
+
+
+```
+
+
+```{r model evaluation: Prop. Hazards Assumptions}
+
+# Test Prop. Haz assumption on a few models, chose top significant genes 
+test_genes <- c("APC", "BRAF", "PIK3CA")
+
+ph_results <- tibble()
+
+for (gene in test_genes) {
+  # get univar model with interaction
+  model <- uniRes_improved[[gene]]$model
+  
+  # test Prop. Haz assumption
+  ph_test <- cox.zph(model)
+  
+  cat("Gene:", gene, "\n")
+  print(ph_test)
+  cat("\n")
+  
+  # Extract p-values and store
+  ph_results <- bind_rows(
+    ph_results,
+    tibble(
+      Gene = gene,
+      Variable = rownames(ph_test$table),
+      ChiSq = ph_test$table[, "chisq"],
+      P_value = ph_test$table[, "p"]
+    )
+  )
+}
+```
+
+
+```{r model evaluation: C index }
+# Note: in the context of this problem, we are not super interested in how well the model is predicting survival based on the gene alone, but rather identifying genetic biomarkers ~associated~ with survival by treatment group. Therefore, c-index is just for checking the model is not insanely bad, but I am more interested in the HRs and interaction terms themselves. There are many factors that contribute to survival, I just want to see if there is an association between treatment group and gene mutation in survival as a whole, not that it can singularly predict survival. 
+
+# C-index for all univar resuls from the improved univar model (more covars)
+c_indices <- tibble()
+
+for (gene in mutationGenes) {
+  model <- uniRes_improved[[gene]]$model
+  summary_mod <- summary(model)
+  
+  c_index <- summary_mod$concordance[1]
+  c_se <- summary_mod$concordance[2]
+  
+  c_indices <- bind_rows(
+    c_indices,
+    tibble(
+      Gene = gene,
+      C_Index = round(c_index, 3),
+      SE = round(c_se, 3)
+    )
+  )
+}
+
+# Print results
+print(c_indices)
+
+
+# Report average
+cat("\nMean C-index across genes:", round(mean(c_indices$C_Index), 3), "\n")
+```
+
+
+
+```{r model evaluation: Linearity assumption }
+
+# choosing the BRAF gene's model to check the assumption 
+model_adjusted <- uniRes_improved[["BRAF"]]$model
+
+# residuals
+mart_resid <- residuals(model_adjusted, type = "martingale")
+model_frame <- model.frame(model_adjusted)
+
+# check Age
+par(mfrow = c(1, 3))
+
+age_numeric <- model_frame$CURRENT_AGE_DEID
+plot(age_numeric, mart_resid,
+     main = "Linearity: Age",
+     xlab = "Age", ylab = "Martingale Residuals")
+abline(h = 0, lty = 2)
+lines(lowess(age_numeric, mart_resid), col = "red", lwd = 2)
+
+# check MSI_Score
+msi_numeric <- model_frame$logMSI
+plot(msi_numeric, mart_resid,
+     main = "Linearity: MSI Score",
+     xlab = "MSI Score", ylab = "Martingale Residuals")
+abline(h = 0, lty = 2)
+lines(lowess(msi_numeric, mart_resid), col = "red", lwd = 2)
+
+# check TMB_NONSYNONYMOUS
+tmb_numeric <- model_frame$logTMB
+plot(tmb_numeric, mart_resid,
+     main = "Linearity: TMB",
+     xlab = "TMB Non-Synonymous", ylab = "Martingale Residuals")
+abline(h = 0, lty = 2)
+lines(lowess(tmb_numeric, mart_resid), col = "red", lwd = 2)
+
+par(mfrow = c(1, 1))
+
+
+```
+
+
+```{r model evaluation: Outliers, leverage/ influential points}
+
+# are outliers driving results? :(
+# looking at the BRAF model for baseline look 
+
+# deviance (standardized resids)
+deviance_residuals <- residuals(model_adjusted, type = "deviance")
+
+# flag any residuals greater than abs(3)
+outliers <- which(abs(deviance_residuals) > 3)
+n_outliers <- length(outliers)
+
+cat("Number of outliers (|deviance residual| > 3):", n_outliers, "\n")
+cat("Percentage of cohort:", round((n_outliers / nrow(survDF)) * 100, 1), "%\n")
+
+if (n_outliers > 0 && n_outliers <= 10) {
+  cat("\nOutlier patient IDs:\n")
+  print(survDF$PATIENT_ID[outliers])
+}
+
+# Plot residuals
+# flag outliers for plot 
+is_outlier <- abs(deviance_residuals) > 3
+
+# red as outlier, black as not outlier
+colors <- ifelse(is_outlier, "red", "black")
+
+# plotting
+plot(fitted(model_adjusted), deviance_residuals,
+     main = "Deviance Residuals vs Fitted Values",
+     xlab = "Fitted Values (log hazard)",
+     ylab = "Deviance Residuals",
+     col = colors)  # ← Add this
+abline(h = 0, lty = 2)
+abline(h = c(-3, 3), lty = 3, col = "red")
+
+# legend
+legend("topright", 
+       legend = c("Normal", "Outlier"),
+       col = c("black", "red"),
+       pch = 1)
+```
+
+
+
+```{r model eval: multicollinearity}
+# checking if predictors themselves are correlated with each other :( 
+
+# make a correlation matrix (only numeric vars)
+numeric_vars <- survDF |>
+  dplyr::select(
+    # Age (with transformation)
+    CURRENT_AGE_DEID, ageSquared,
+    
+    # MSI (with transformation)
+    logMSI, logMSISquared,
+    
+    # TMB (with transformation)
+    logTMB, logTMBSquared,
+    
+    # All gene mutations (10 genes)
+    ends_with("_mut"),
+    
+    # Outcomes
+    OS_time, OS_event
+  ) |>
+  drop_na()
+
+corr_matrix <- cor(numeric_vars)
+print(round(corr_matrix, 3))
+
+# Convert to long format for ggplot
+corr_long <- melt(corr_matrix) |>
+  filter(Var1 != Var2) |>  
+  filter(abs(value) > 0.5)
+
+# Create heatmap
+ggplot(corr_long, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile(color = "black", size = 0.5) +
+  geom_text(aes(label = round(value, 2)), color = "black", size = 3) +
+  scale_fill_gradient2(low = "lightblue", mid = "white", high = "red",
+                       limits = c(-1, 1), midpoint = 0) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text.y = element_text(size = 10),
+        axis.title = element_blank()) +
+  labs(title = "Correlation Matrix Heatmap (selected correlations > 0.5)",
+       fill = "Correlation")
+
+```
+
+
+```{r model eval: final summary table}
+
+
+```
+
+
+
+
+
+
+
+
+
+
+```{r Demographics Table}
+
+CRC_clinical |> group_by(OS_STATUS) |>
+  summarise(Male = mean(GENDER == "Male"), 
+            White = mean(RACE == "White"), 
+            Asian = mean(RACE == "Asian-Far East/Indian Subcont"), 
+            Black = mean(RACE == "Black Or African American"), 
+            `Native American/ Pacific Isl.` = mean((RACE == "Native American-Am Ind/Alaska") + (RACE == "Native Hawaiian Or Pacific Isl")),
+            `Stage 1-3` = mean(STAGE_HIGHEST_RECORDED == "Stage 1-3"), 
+            `Stage 4` = mean(STAGE_HIGHEST_RECORDED == "Stage 4"), 
+            `Never Smoked` = mean(SMOKING_PREDICTIONS_3_CLASSES == "Never"), 
+            `Former/ Current Smoker` = mean(SMOKING_PREDICTIONS_3_CLASSES =="Former/Current Smoker"),
+            `No Prior Meds` = mean(PRIOR_MED_TO_MSK == "No prior medications"), 
+            `Prior Meds` = mean(PRIOR_MED_TO_MSK == "Prior medications to MSK"),
+            `Average Age` = mean(CURRENT_AGE_DEID)) |>
+  gt() |>
+  tab_header(title = "Table 1. Demographics of colorectal cancer patients") 
+
+
+
+```
+
+
+
+```{r robustness checking}
+
+# bootstrapping confidence intervals for robustness checking 
+# checking the univariate improved models 
+bootstrap_one_gene <- function(data, gene_name, indices) {
+  boot_data <- data[indices, ]
+  geneVar <- paste0(gene_name, "_mut")
+  
+  model_boot <- coxph(
+    as.formula(paste(
+      "Surv(OS_time, OS_event) ~", geneVar,
+      "+ moa_consolidated +", geneVar, ":moa_consolidated",
+      "+ CURRENT_AGE_DEID + ageSquared + GENDER + RACE + STAGE_HIGHEST_RECORDED",
+      "+ logMSI + logMSISquared + logTMB + logTMBSquared"
+    )),
+    data = boot_data
+  )
+  
+  coef_boot <- coef(model_boot)
+  ix_pos <- grep(":moa_consolidated", names(coef_boot))
+  return(exp(coef_boot[ix_pos]))
+}
+
+cat("Running bootstrap (B=500 resamples per gene)...\n")
+cat("This may take 2-3 minutes...\n\n")
+
+set.seed(42)
+
+# results tibble 
+boot_ci_all_genes <- tibble()
+
+# for loop to bootstrap per gene (selected key genes)
+for (gene in c("BRAF", "APC", "PIK3CA", "SMAD4")) { 
+  
+  cat("Bootstrapping:", gene, "...\n")
+  
+  boot_res <- boot(survDF, bootstrap_one_gene, R = 250, gene_name = gene)
+  
+  # CIs fir each IX term! 
+  for (i in 1:length(boot_res$t0)) {
+    interaction_name <- names(boot_res$t0)[i]
+    
+    # quantile-based 95% CI 
+    ci_lower <- quantile(boot_res$t[, i], 0.025, na.rm = TRUE)
+    ci_upper <- quantile(boot_res$t[, i], 0.975, na.rm = TRUE)
+    point_est <- boot_res$t0[i]
+    n_na <- sum(is.na(boot_res$t[, i]))
+    
+    boot_ci_all_genes <- bind_rows(
+      boot_ci_all_genes,
+      tibble(
+        Gene = gene,
+        Interaction = interaction_name,
+        `Point HR` = round(point_est, 3),
+        `CI Lower` = round(ci_lower, 3),
+        `CI Upper` = round(ci_upper, 3),
+        `95% CI` = paste0(round(ci_lower, 3), "-", round(ci_upper, 3)),
+        `Failed Boots` = n_na,
+        Robust = ifelse(ci_lower > 1 | ci_upper < 1, "YES", "NO")
+      )
+    )
+  }
+}
+
+print(boot_ci_all_genes)
+```
+
+```{r HR Stability}
+
+# deviance residuals (outliers)
+
+deviance_resid <- residuals(model_adjusted, type = "deviance")
+outlier_indices <- which(abs(deviance_resid) > 3)
+n_outliers <- length(outlier_indices)
+pct_outliers <- (n_outliers / nrow(survDF)) * 100
+
+cat("Number of outliers:", n_outliers, "(", round(pct_outliers, 2), "%)\n")
+
+if (n_outliers > 0 & n_outliers <= 20) {
+  cat("Outlier patient IDs:\n")
+  print(survDF$PATIENT_ID[outlier_indices])
+  cat("\n")
+}
+```
+
+
+```{r sensitivity analysis: exclusion of outliers}
+
+
+# deviance residuals (outliers)
+deviance_resid <- residuals(model_adjusted, type = "deviance")
+outlier_indices <- which(abs(deviance_resid) > 3)
+n_outliers <- length(outlier_indices)
+pct_outliers <- (n_outliers / nrow(survDF)) * 100
+
+cat("Number of outliers:", n_outliers, "(", round(pct_outliers, 2), "%)\n")
+
+if (n_outliers > 0 & n_outliers <= 20) {
+  cat("Outlier patient IDs:\n")
+  print(survDF$PATIENT_ID[outlier_indices])
+  cat("\n")
+}
+
+
+# Create dataset without outliers
+survDF_no_outliers <- survDF[-outlier_indices, ]
+
+cat("Original sample size:", nrow(survDF), "\n")
+cat("Sample size without outliers:", nrow(survDF_no_outliers), "\n")
+cat("Patients removed:", nrow(survDF) - nrow(survDF_no_outliers), "\n\n")
+
+# Refit key gene models without outliers
+sensitivity_comparison <- tibble()
+
+for (gene in c("BRAF", "APC", "PIK3CA", "SMAD4")) {
+  
+  geneVar <- paste0(gene, "_mut")
+  
+  # refit model WITHOUT outliers (same specs as uniRes_improved)
+  model_no_out <- coxph(
+    as.formula(paste(
+      "Surv(OS_time, OS_event) ~", geneVar,
+      "+ moa_consolidated +", geneVar, ":moa_consolidated",
+      "+ CURRENT_AGE_DEID + ageSquared + GENDER + RACE + STAGE_HIGHEST_RECORDED",
+      "+ logMSI + logMSISquared + logTMB + logTMBSquared"
+    )),
+    data = survDF_no_outliers
+  )
+  
+  # get coeffs from original AND no-outliers models
+  orig_coef <- coef(uniRes_improved[[gene]]$model)
+  no_out_coef <- coef(model_no_out)
+  
+  # get ix term positions
+  orig_ix <- grep(":moa_consolidated", names(orig_coef))
+  no_out_ix <- grep(":moa_consolidated", names(no_out_coef))
+  
+  # compare each ix term
+  for (j in 1:length(orig_ix)) {
+    interaction_name <- names(orig_coef)[orig_ix[j]]
+    
+    orig_hr <- exp(orig_coef[orig_ix[j]])
+    no_out_hr <- exp(no_out_coef[no_out_ix[j]])
+    pct_change <- ((no_out_hr - orig_hr) / orig_hr) * 100
+    
+    sensitivity_comparison <- bind_rows(
+      sensitivity_comparison,
+      tibble(
+        Gene = gene,
+        Interaction = str_replace_all(interaction_name, "_mut:moa_consolidated", "") |>
+          str_replace("Chemo", "Chemo ") |> str_trim(),
+        `Original HR` = round(orig_hr, 3),
+        `No Outliers HR` = round(no_out_hr, 3),
+        `% Change` = round(pct_change, 1),
+        Stable = ifelse(abs(pct_change) < 10, "YES", "NO")
+      )
+    )
+  }
+}
+
+# Display results
+print(sensitivity_comparison)
+
+
+```
+
+
+
