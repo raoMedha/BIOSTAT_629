@@ -39,14 +39,16 @@
     <section id="about">
       <div class="container">
         <h2>About</h2>
-        <p>Your about text here.</p>
+        <p>This study proposes a novel framework for a somatic polygenic risk score (sPRS), which aggregates weighted somatic tumor variants (gene x variant) to stratify metastasis risk. Weights were computed using MSK-CHORD 2024 data (n = 21,475) via L1-regularized logistic regression with selective penalization, keeping age, sex, race, and cancer type unpenalized.</p>
       </div>
     </section>
 
     <section id="methods">
       <div class="container">
         <h2>Methods</h2>
-        <p>Your methods here.</p>
+        <p>Weights were computed using MSK-CHORD 2024 data (n = 21,475) via L1-regularized logistic regression with selective penalization, keeping age, sex,
+race, and cancer type unpenalized. Bootstrap stability analysis across 1,000 samples identified 13
+gene x variants that consistently contributed to metastasis risk. Association with metastatisis was evaluated using a Likelihood Ratio Test on both adjusted and unadjusted logistic regression models. sPRS was also compared against TMB and MSI in terms of discriminative ability regarding metastasis. Finally, sPRS was grouped by tertile and tested for signficant differences.</p>
       </div>
     </section>
 
@@ -55,9 +57,23 @@
         <h2>Results</h2>
         <div class="fig-grid">
           <figure>
-            <p class="fig-finding">Your finding here.</p>
-            <img src="figures/your-figure.png" alt="description">
-            <figcaption><strong>Figure 1.</strong> Your caption.</figcaption>
+            <p class="fig-finding">The 13 gene x variants are identified in the table, with their corresponding weights.</p>
+            <img src="figures/Retained_Mutations_Primary.png" alt="description">
+            <figcaption><strong>Table 1.</strong>Some gene x variants had postiive weights, while others had negative, suggesting some protective and harmful genetic variants with respect to metastasis</figcaption>
+          </figure>
+        </div>
+         <div class="fig-grid">
+          <figure>
+            <p class="fig-finding">Metastatic status is associated with sPRS in both adjusted and unadjusted settings.</p>
+            <img src="figures/sPRS_Association_Table.png" alt="description">
+            <figcaption><strong>Table 2.</strong>Binomial logistic regression models using sPRS as the predictor, and adjusting for race, sex, age, and cancer type in the adjusted model.</figcaption>
+          </figure>
+        </div>
+          <div class="fig-grid">
+          <figure>
+            <p class="fig-finding">sPRS distribution by tertile group was significantly different with respect to metastatic rate.</p>
+            <img src="figures/sPRS_Distribution_Groups_Primary.png" alt="description">
+            <figcaption><strong>Table 2.</strong>Similar to a PRS, sPRS can stratify metastasis risk into low, medium, and high. </figcaption>
           </figure>
         </div>
       </div>
